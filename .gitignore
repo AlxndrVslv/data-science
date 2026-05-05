@@ -1,0 +1,37 @@
+# Виртуальные окружения (ОНИ ЗАНИМАЮТ БОЛЬШЕ ВСЕГО)
+venv/
+.virtualenvs/
+env/
+.venv/
+.idea/
+.ipynb_checkpoints/
+
+# Кэш Python
+__pycache__/
+*.pyc
+
+# Служебные папки IDE
+.idea/
+.vscode/
+
+# Временные файлы ОС (особенно macOS)
+.DS_Store
+__MACOSX/
+Thumbs.db
+
+# Большие бинарные файлы (измените или добавьте нужные расширения)
+*.zip
+*.tar.gz
+*.7z
+*.rar
+*.iso
+*.keras
+*.csv
+*.tsv
+*.Identifier
+*.parquet
+
+# Если у вас в проекте есть большие файлы данных (>50 МБ), их тоже нужно исключить
+# Раскомментируйте и измените пути:
+# *.parquet
+# data/raw/
