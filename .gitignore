@@ -30,7 +30,6 @@ Thumbs.db
 *.tsv
 *.Identifier
 *.parquet
-*.py
 *.sh
 *.txt
 
