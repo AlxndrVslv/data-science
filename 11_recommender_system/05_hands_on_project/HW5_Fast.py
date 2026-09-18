@@ -450,7 +450,7 @@ class Hybrid:
         model_types = ['content', 'collaborative', 'hybrid']
         models_dict = dict(zip(model_types, recommendations))
 
-        result = {}
+        result = defaultdict(dict)
 
         for model_type, recommendations in models_dict.items():
 
@@ -462,21 +462,26 @@ class Hybrid:
 
                 real_ratings = user_real_ratings[user_id]
 
+                # Precision@k
                 relevant_precisions_count = 0
-                for movie_id in rec_list[:k]:
-                    if movie_id[0] in real_ratings.keys() and real_ratings[movie_id[0]] >= threshold:
+                for movie_id, rating in rec_list[:k]:
+                    if movie_id in real_ratings.keys() and real_ratings[movie_id] >= threshold:
                         relevant_precisions_count += 1
 
-                precisions.append(relevant_precisions_count / k)
+                l = len(rec_list[:k])
+                precisions.append(relevant_precisions_count / l if l else 0)
 
+                # Recall @ k
                 relevant_recalls_count = 0
                 for movie_id in real_ratings.keys():
-                    if movie_id in [movie_id for movie_id, rating in rec_list[:k]]:
+                    if movie_id in [m_id for m_id, r in rec_list[:k]] and real_ratings[movie_id] >= threshold:
                         relevant_recalls_count += 1
 
-                recalls.append(relevant_recalls_count / len(real_ratings))
+                l = len([m_id for m_id, r in real_ratings.items() if r >= threshold])
+                recalls.append(relevant_recalls_count / l if l else 0)
 
-            result[model_type] = sum(precisions) / len(precisions) if precisions else 0.0
+            result[model_type]['precisions'] = round(sum(precisions) / len(precisions), 5) if precisions else 0.0
+            result[model_type]['recalls'] = round(sum(recalls) / len(recalls), 5) if recalls else 0.0
 
         return result
 
