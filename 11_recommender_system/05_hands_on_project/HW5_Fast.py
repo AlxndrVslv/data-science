@@ -435,7 +435,7 @@ class Hybrid:
 
         return content_recs, collab_recs, hybrid_recs
 
-    def precision_at_k(self, k = 10, w_content = 0.3, threshold = 4):
+    def get_quality_metrics(self, k = 10, w_content = 0.3, threshold = 4):
 
         user_real_ratings = defaultdict(dict)
 
@@ -454,52 +454,38 @@ class Hybrid:
 
         for model_type, recommendations in models_dict.items():
 
-            precisions = []
+            precisions, recalls, aps = [], [], []
 
             for user_id, rec_list in recommendations.items():
                 if user_id not in user_real_ratings:
                     continue
 
                 real_ratings = user_real_ratings[user_id]
-                relevant_count = 0
 
+                relevant_precisions_count = 0
                 for movie_id in rec_list[:k]:
                     if movie_id[0] in real_ratings.keys() and real_ratings[movie_id[0]] >= threshold:
-                        relevant_count += 1
+                        relevant_precisions_count += 1
 
-                precisions.append(relevant_count / k)
+                precisions.append(relevant_precisions_count / k)
+
+                relevant_recalls_count = 0
+                for movie_id in real_ratings.keys():
+                    if movie_id in [movie_id for movie_id, rating in rec_list[:k]]:
+                        relevant_recalls_count += 1
+
+                recalls.append(relevant_recalls_count / len(real_ratings))
 
             result[model_type] = sum(precisions) / len(precisions) if precisions else 0.0
 
         return result
 
-        def recall_at_k(self, k=10, w_content=0.3, threshold=4):
-
-            user_real_ratings = defaultdict(dict)
-
-            for user_id, movie_id, rating in zip(
-                    self.df_test['Cust_Id'],
-                    self.df_test['Movie_Id'],
-                    self.df_test['Rating']
-            ):
-                user_real_ratings[user_id][movie_id] = rating
-
-            result = {}
-
-            for model_type, recommendations in models_dict.items():
-
-                recalls = []
-
-                for user_id, rec_list in recommendations.items():
-
-
-
 
 # In[34]:
 
 
-# recommend = Hybrid(movies_list = movies_df, df_train = df_train.head(50000), df_test = df_test.head(12000))
-recommend = Hybrid(movies_list = movies_df, df_train = df_train, df_test = df_test)
+recommend = Hybrid(movies_list = movies_df, df_train = df_train.head(50000), df_test = df_test.head(12000))
+# recommend = Hybrid(movies_list = movies_df, df_train = df_train, df_test = df_test)
 
 
 # In[18]:
@@ -540,7 +526,7 @@ recommend = Hybrid(movies_list = movies_df, df_train = df_train, df_test = df_te
 # colab_recs = recs[1]
 # hybrid_recs = recs[2]
 
-precisions = recommend.precision_at_k(w_content = 0.05)
+precisions = recommend.get_quality_metrics(w_content = 0.05)
 
 
 # In[28]:
