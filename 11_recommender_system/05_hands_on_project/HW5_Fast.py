@@ -20,7 +20,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 
 from surprise import Dataset, Reader, SVD
-
+from surprise.accuracy import rmse
+from surprise.model_selection import train_test_split
 
 # ## 1. Исследовательский анализ данных (Exploratory Data Analysis - EDA):
 
@@ -289,7 +290,7 @@ class Hybrid:
 
     def _get_popular_movies(self, k = 10):
 
-        popular_movie_ids = self.df_test[self.df_test['Rating'] >= 4] \
+        popular_movie_ids = self.df_train[self.df_train['Rating'] >= 4] \
             .groupby('Movie_Id')['Rating'].count() \
             .sort_values(ascending = False).head(k) \
             .index.tolist()
@@ -307,10 +308,10 @@ class Hybrid:
     def get_content_recommends(self, user_id, k = 10):
 
         # Если у пользователя больше 5 оценок, то контентную модель не применяем. Ее применяем только для холодного старта
-        if self.df_test[self.df_test['Cust_Id'] == user_id]['Rating'].count() > 5:
+        if self.df_train[self.df_train['Cust_Id'] == user_id]['Rating'].count() > 5:
             return [(0, 0.0),]
 
-        user_liked_movies = self.df_test[(self.df_test['Cust_Id'] == user_id) & (self.df_test['Rating'] >= 4)]['Movie_Id'].tolist()
+        user_liked_movies = self.df_train[(self.df_train['Cust_Id'] == user_id) & (self.df_train['Rating'] >= 4)]['Movie_Id'].tolist()
 
         if not user_liked_movies:
             return self._create_position_scores(self._get_popular_movies(k))
@@ -339,35 +340,38 @@ class Hybrid:
         reader = Reader(rating_scale=(1, 5))
         data = Dataset.load_from_df(df_copy, reader)
 
-        trainset = data.build_full_trainset()
+        sub_trainset, sub_testset = train_test_split(data, test_size = 0.2, random_state = 42)
 
         model = SVD(n_factors=100, n_epochs=30, lr_all=0.005, reg_all=0.02)
-        model.fit(trainset)
+        model.fit(sub_trainset)
 
-        return model
+        return model, sub_testset
 
-    def _create_testset(self):
+    # def _create_testset(self):
+    #
+    #     df_copy = self.df_test[['Cust_Id', 'Movie_Id', 'Rating']].copy()
+    #     df_copy.columns = ['user_id', 'item_id', 'rating']
+    #
+    #     testset = list(
+    #         zip(
+    #             df_copy['user_id'].values,
+    #             df_copy['item_id'].values,
+    #             df_copy['rating'].values
+    #         )
+    #     )
+    #
+    #     return testset
 
-        df_copy = self.df_test[['Cust_Id', 'Movie_Id', 'Rating']].copy()
-        df_copy.columns = ['user_id', 'item_id', 'rating']
-
-        testset = list(
-            zip(
-                df_copy['user_id'].values,
-                df_copy['item_id'].values,
-                df_copy['rating'].values
-            )
-        )
-
-        return testset
-
-    def get_collaborative_recommends(self, k = 10):
+    def get_collaborative_recommends(self, k = 10, rmse_only = False):
 
         top_n = defaultdict(list)
 
-        model = self._create_model()
-        testset = self._create_testset()
+        model, testset = self._create_model()
+        # testset = self._create_testset()
         predictions = model.test(testset)
+
+        if rmse_only:
+            return rmse(predictions, verbose = False)
 
         for uid, iid, _, est, _ in predictions:
             top_n[uid].append((iid, est))
@@ -381,6 +385,9 @@ class Hybrid:
             top_n[uid] = user_ratings_scaled[:k]
 
         return top_n
+
+    def get_rmse(self):
+        return self.get_collaborative_recommends(rmse_only = True)
 
     ############################################################################################################################
 
@@ -398,7 +405,7 @@ class Hybrid:
 
     def get_hybrid_recommends(self, k = 10, w_content = 0.3):
 
-        user_ids = self.df_test['Cust_Id'].unique()
+        user_ids = self.df_train['Cust_Id'].unique()
 
         print('Вычисление контентных рекомендаций...')
 
@@ -465,23 +472,37 @@ class Hybrid:
                 # Precision@k
                 relevant_precisions_count = 0
                 for movie_id, rating in rec_list[:k]:
-                    if movie_id in real_ratings.keys() and real_ratings[movie_id] >= threshold:
+                    if movie_id in real_ratings and real_ratings[movie_id] >= threshold:
                         relevant_precisions_count += 1
 
                 l = len(rec_list[:k])
                 precisions.append(relevant_precisions_count / l if l else 0)
 
-                # Recall @ k
+                # Recall@k
                 relevant_recalls_count = 0
-                for movie_id in real_ratings.keys():
+                for movie_id in real_ratings:
                     if movie_id in [m_id for m_id, r in rec_list[:k]] and real_ratings[movie_id] >= threshold:
                         relevant_recalls_count += 1
 
                 l = len([m_id for m_id, r in real_ratings.items() if r >= threshold])
                 recalls.append(relevant_recalls_count / l if l else 0)
 
+                # MAP@k
+                hits = 0
+                ap_sum = 0.0
+
+                for i, (movie_id, r) in enumerate(rec_list[:k], start=1):
+                    if movie_id in real_ratings and real_ratings[movie_id] >= threshold:
+                        hits += 1
+                        ap_sum += hits / i
+
+                n_relevant = sum(1 for r in real_ratings.values() if r >= threshold)
+                aps.append(ap_sum / min(n_relevant, k) if n_relevant else 0.0)
+
             result[model_type]['precisions'] = round(sum(precisions) / len(precisions), 5) if precisions else 0.0
             result[model_type]['recalls'] = round(sum(recalls) / len(recalls), 5) if recalls else 0.0
+            result[model_type]['maps'] = round(sum(aps) / len(aps), 5) if aps else 0.0
+
 
         return result
 
@@ -489,8 +510,8 @@ class Hybrid:
 # In[34]:
 
 
-recommend = Hybrid(movies_list = movies_df, df_train = df_train.head(50000), df_test = df_test.head(12000))
-# recommend = Hybrid(movies_list = movies_df, df_train = df_train, df_test = df_test)
+# recommend = Hybrid(movies_list = movies_df, df_train = df_train.head(50000), df_test = df_test.head(12000))
+recommend = Hybrid(movies_list = movies_df, df_train = df_train, df_test = df_test)
 
 
 # In[18]:
@@ -511,7 +532,7 @@ recommend = Hybrid(movies_list = movies_df, df_train = df_train.head(50000), df_
 # In[20]:
 
 
-# get_ipython().run_cell_magic('time', '', 'user_collab_recs = recommend.get_collaborative_recommends(k = 10)\n')
+# user_collab_recs = recommend.get_collaborative_recommends(k = 10)
 
 
 # In[21]:
@@ -533,6 +554,8 @@ recommend = Hybrid(movies_list = movies_df, df_train = df_train.head(50000), df_
 
 precisions = recommend.get_quality_metrics(w_content = 0.05)
 
+# rmse = recommend.get_rmse()
+# print(f'Качество модели коллаборативной фильтрации = {rmse:.5f}')
 
 # In[28]:
 
