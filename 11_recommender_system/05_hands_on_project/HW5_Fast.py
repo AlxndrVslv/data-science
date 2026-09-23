@@ -17,11 +17,12 @@ from scipy.sparse import save_npz, load_npz
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.model_selection import train_test_split as sklearn_split
 
 
 from surprise import Dataset, Reader, SVD
 from surprise.accuracy import rmse
-from surprise.model_selection import train_test_split
+from surprise.model_selection import train_test_split as surprice_split
 
 # ## 1. Исследовательский анализ данных (Exploratory Data Analysis - EDA):
 
@@ -63,12 +64,12 @@ print(sorted(movies_df['Year'].unique()))
 movies_df[movies_df['Year'] == 'NULL']
 
 
-# Видно, что таких всего 7. Заменим их на NaN:
+# Видно, что таких всего 7. Заменим их на 1900 год:
 
 # In[5]:
 
 
-movies_df['Year'] = movies_df['Year'].replace('NULL', pd.NA)
+movies_df['Year'] = movies_df['Year'].replace('NULL', '1900')
 
 
 # Приведем ИД фильма к числовому типу:
@@ -85,18 +86,45 @@ movies_df.head()
 # In[7]:
 
 
-ratings_df = pd.read_csv(
-    'total_ratings.csv',
-    header = None,
-    names = ['Movie_Id', 'Cust_Id', 'Rating', 'Date'],
-    dtype = {
-        'Movie_Id': 'int16',
-        'Cust_Id': 'int32',
-        'Rating': 'int8'
-    },
-    parse_dates = ['Date'],
-    nrows = 10**6
-)
+# ratings_df = pd.read_csv(
+#     'total_ratings.csv',
+#     header = None,
+#     names = ['Movie_Id', 'Cust_Id', 'Rating', 'Date'],
+#     dtype = {
+#         'Movie_Id': 'int16',
+#         'Cust_Id': 'int32',
+#         'Rating': 'int8'
+#     },
+#     parse_dates = ['Date'],
+#     nrows = 10**6
+# )
+
+# Шаг 1: читаем рейтинги по chunks, собираем по 5000 случайных пользователям
+all_users = set()
+
+for chunk in pd.read_csv('total_ratings.csv', header=None,
+                         names=['Movie_Id', 'Cust_Id', 'Rating', 'Date'],
+                         dtype={'Movie_Id': 'int32', 'Cust_Id': 'int32', 'Rating': 'int8'},
+                         chunksize=1_000_000):
+    all_users.update(chunk['Cust_Id'].unique())
+
+# Шаг 2: выбираем 5000 случайных пользователей
+np.random.seed(42)
+selected_users = set(np.random.choice(list(all_users), 5000, replace=False))
+
+# Шаг 3: читаем снова, оставляя только их
+chunks = []
+for chunk in pd.read_csv('total_ratings.csv', header=None,
+                         names=['Movie_Id', 'Cust_Id', 'Rating', 'Date'],
+                         dtype={'Movie_Id': 'int32', 'Cust_Id': 'int32', 'Rating': 'int8'},
+                         parse_dates=['Date'],
+                         chunksize=1_000_000):
+    filtered = chunk[chunk['Cust_Id'].isin(selected_users)]
+    if len(filtered) > 0:
+        chunks.append(filtered)
+
+ratings_df = pd.concat(chunks, ignore_index=True)
+print(f"Оценок: {len(ratings_df)}, Фильмов: {ratings_df['Movie_Id'].nunique()}")
 
 ratings_df.head()
 
@@ -177,13 +205,13 @@ ratings_df.groupby('Cust_Id')['Rating'].count().sort_values(ascending = False).h
 # In[14]:
 
 
-threshold_dt = datetime(2004, 1, 1)
-
-while threshold_dt < datetime(2006, 1, 1):
-    train_cnt = ratings_df[ratings_df['Date'] < threshold_dt]['Rating'].count()
-    test_cnt = ratings_df[ratings_df['Date'] >= threshold_dt]['Rating'].count()
-    print(f'На дату {threshold_dt} доля тестовой выборки равна {test_cnt / (train_cnt + test_cnt): .2f}')
-    threshold_dt += relativedelta(months = 1)
+# threshold_dt = datetime(2004, 1, 1)
+#
+# while threshold_dt < datetime(2006, 1, 1):
+#     train_cnt = ratings_df[ratings_df['Date'] < threshold_dt]['Rating'].count()
+#     test_cnt = ratings_df[ratings_df['Date'] >= threshold_dt]['Rating'].count()
+#     print(f'На дату {threshold_dt} доля тестовой выборки равна {test_cnt / (train_cnt + test_cnt): .2f}')
+#     threshold_dt += relativedelta(months = 1)
 
 
 # Видно, что такое соотношение достигается, если выбрать порогом 01.08.2005.
@@ -191,8 +219,10 @@ while threshold_dt < datetime(2006, 1, 1):
 # In[15]:
 
 
-df_train = df[df['Date'] < datetime(2005, 8, 1)]
-df_test = df[df['Date'] >= datetime(2005, 8, 1)]
+# df_train = df[df['Date'] < datetime(2005, 8, 1)]
+# df_test = df[df['Date'] >= datetime(2005, 8, 1)]
+
+df_train, df_test = sklearn_split(df, test_size = 0.2, random_state = 42)
 
 print(df_train.shape, df_test.shape)
 
@@ -340,7 +370,7 @@ class Hybrid:
         reader = Reader(rating_scale=(1, 5))
         data = Dataset.load_from_df(df_copy, reader)
 
-        sub_trainset, sub_testset = train_test_split(data, test_size = 0.2, random_state = 42)
+        sub_trainset, sub_testset = surprice_split(data, test_size = 0.2, random_state = 42)
 
         model = SVD(n_factors=100, n_epochs=30, lr_all=0.005, reg_all=0.02)
         model.fit(sub_trainset)
