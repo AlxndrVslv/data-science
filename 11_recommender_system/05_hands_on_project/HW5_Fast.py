@@ -23,6 +23,7 @@ from sklearn.model_selection import train_test_split as sklearn_split
 from surprise import Dataset, Reader, SVD
 from surprise.accuracy import rmse
 from surprise.model_selection import train_test_split as surprice_split
+from surprise.prediction_algorithms import predictions
 
 # ## 1. Исследовательский анализ данных (Exploratory Data Analysis - EDA):
 
@@ -318,9 +319,9 @@ class Hybrid:
 
     ############################################################################################################################
 
-    def _get_popular_movies(self, k = 10):
+    def _get_popular_movies(self, df, k = 10):
 
-        popular_movie_ids = self.df_train[self.df_train['Rating'] >= 4] \
+        popular_movie_ids = df[df['Rating'] >= 4] \
             .groupby('Movie_Id')['Rating'].count() \
             .sort_values(ascending = False).head(k) \
             .index.tolist()
@@ -335,73 +336,80 @@ class Hybrid:
 
     ############################################################################################################################
 
-    def get_content_recommends(self, user_id, k = 10):
+    def get_content_recommends(self, df, k = 10):
 
-        # Если у пользователя больше 5 оценок, то контентную модель не применяем. Ее применяем только для холодного старта
-        if self.df_train[self.df_train['Cust_Id'] == user_id]['Rating'].count() > 5:
-            return [(0, 0.0),]
+        top_n = defaultdict(list)
 
-        user_liked_movies = self.df_train[(self.df_train['Cust_Id'] == user_id) & (self.df_train['Rating'] >= 4)]['Movie_Id'].tolist()
+        for user_id in df['Cust_Id'].unique():
 
-        if not user_liked_movies:
-            return self._create_position_scores(self._get_popular_movies(k))
+            # Если у пользователя больше 5 оценок, то контентную модель не применяем. Ее применяем только для холодного старта
+            if df[df['Cust_Id'] == user_id]['Rating'].count() > 5:
+                top_n[user_id] = [(0, 0.0),]
+                continue
 
-        candidates = {}
+            user_liked_movies = df[(df['Cust_Id'] == user_id) & (df['Rating'] >= 4)]['Movie_Id'].tolist()
 
-        for liked_movie in user_liked_movies:
-            for similar_movie in self.top_similar.get(liked_movie, []):
-                candidates[similar_movie] = candidates.get(similar_movie, 0) + 1
+            if not user_liked_movies:
+                top_n[user_id] = self._create_position_scores(self._get_popular_movies(df, k))
+                continue
 
-        for liked_movie in user_liked_movies:
-            candidates.pop(liked_movie, None)
+            candidates = {}
 
-        sorted_candidates = sorted(candidates.items(), key = lambda x: x[1], reverse = True)[:k]
-        sorted_candidates = [mid for mid, _ in sorted_candidates]
+            for liked_movie in user_liked_movies:
+                for similar_movie in self.top_similar.get(liked_movie, []):
+                    candidates[similar_movie] = candidates.get(similar_movie, 0) + 1
 
-        return self._create_position_scores(sorted_candidates)
+            for liked_movie in user_liked_movies:
+                candidates.pop(liked_movie, None)
+
+            sorted_candidates = sorted(candidates.items(), key = lambda x: x[1], reverse = True)[:k]
+            sorted_candidates = [mid for mid, _ in sorted_candidates]
+            positioned_scores = self._create_position_scores(sorted_candidates)
+
+            top_n[user_id] = positioned_scores
+
+        self.content_recs = top_n
 
     ############################################################################################################################
 
-    def _create_model(self):
+    def _create_model(self, df):
 
-        df_copy = self.df_train[['Cust_Id', 'Movie_Id', 'Rating']].copy()
+        df_copy = df[['Cust_Id', 'Movie_Id', 'Rating']].copy()
         df_copy.columns = ['user_id', 'item_id', 'rating']
 
         reader = Reader(rating_scale=(1, 5))
         data = Dataset.load_from_df(df_copy, reader)
 
-        sub_trainset, sub_testset = surprice_split(data, test_size = 0.2, random_state = 42)
+        trainset = data.build_full_trainset()
 
         model = SVD(n_factors=100, n_epochs=30, lr_all=0.005, reg_all=0.02)
-        model.fit(sub_trainset)
+        model.fit(trainset)
 
-        return model, sub_testset
+        return model
 
-    # def _create_testset(self):
-    #
-    #     df_copy = self.df_test[['Cust_Id', 'Movie_Id', 'Rating']].copy()
-    #     df_copy.columns = ['user_id', 'item_id', 'rating']
-    #
-    #     testset = list(
-    #         zip(
-    #             df_copy['user_id'].values,
-    #             df_copy['item_id'].values,
-    #             df_copy['rating'].values
-    #         )
-    #     )
-    #
-    #     return testset
+    def _create_trainset(self, df):
 
-    def get_collaborative_recommends(self, k = 10, rmse_only = False):
+        df_copy = df[['Cust_Id', 'Movie_Id', 'Rating']].copy()
+        df_copy.columns = ['user_id', 'item_id', 'rating']
+
+        trainset = list(
+            zip(
+                df_copy['user_id'].values,
+                df_copy['item_id'].values,
+                df_copy['rating'].values
+            )
+        )
+
+        return trainset
+
+    def get_collaborative_recommends(self, df, k = 10):
 
         top_n = defaultdict(list)
 
-        model, testset = self._create_model()
-        # testset = self._create_testset()
-        predictions = model.test(testset)
+        model = self._create_model(df)
 
-        if rmse_only:
-            return rmse(predictions, verbose = False)
+        trainset = self._create_trainset(df)
+        predictions = model.test(trainset)
 
         for uid, iid, _, est, _ in predictions:
             top_n[uid].append((iid, est))
@@ -414,10 +422,11 @@ class Hybrid:
 
             top_n[uid] = user_ratings_scaled[:k]
 
-        return top_n
+        self.collab_recs = top_n
+
 
     def get_rmse(self):
-        return self.get_collaborative_recommends(rmse_only = True)
+        return self.get_collaborative_recommends(df, rmse_only = True)
 
     ############################################################################################################################
 
@@ -433,30 +442,24 @@ class Hybrid:
 
     ############################################################################################################################
 
-    def get_hybrid_recommends(self, k = 10, w_content = 0.3):
-
-        user_ids = self.df_train['Cust_Id'].unique()
+    def get_hybrid_recommends(self, df, k = 10, w_content = 0.3):
 
         print('Вычисление контентных рекомендаций...')
 
-        content_recs = {}
-        for i, user_id in enumerate(user_ids):
-            content_recs[user_id] = self.get_content_recommends(user_id, k * 2)
-            if (i + 1) % 10000 == 0:
-                print(f'Обработано {i + 1} записей из {len(user_ids)}')
+        self.get_content_recommends(df, k * 2)
 
         print('Готово!')
 
         print('Вычисление коллаборативных рекомендаций...')
 
-        collab_recs = self.get_collaborative_recommends(k * 2)
+        self.get_collaborative_recommends(df, k * 2)
 
         print('Готово!')
 
         print('Вычисление гибридных рекомендаций...')
 
-        content_df = self._dict_to_df(content_recs)
-        collab_df = self._dict_to_df(collab_recs)
+        content_df = self._dict_to_df(self.content_recs)
+        collab_df = self._dict_to_df(self.collab_recs)
 
         content_df['w_content_rating'] = content_df['rating'] * w_content
         collab_df['w_collab_rating'] = collab_df['rating'] * (1 - w_content)
@@ -470,9 +473,15 @@ class Hybrid:
             sorted_group = group.sort_values(by = 'total_rating', ascending = False)
             hybrid_recs[uid] = list(zip(sorted_group['iid'], sorted_group['total_rating']))[:k]
 
-        return content_recs, collab_recs, hybrid_recs
+        self.hybrid_recs = hybrid_recs
+
 
     def get_quality_metrics(self, k = 10, w_content = 0.3, threshold = 4):
+
+        if (    not hasattr(self, 'content_recs') or
+                not hasattr(self, 'collab_recs') or
+                not hasattr(self, 'hybrid_recs') ):
+            self.get_hybrid_recommends(df = self.df_train, k = k)
 
         user_real_ratings = defaultdict(dict)
 
@@ -483,17 +492,18 @@ class Hybrid:
         ):
             user_real_ratings[user_id][movie_id] = rating
 
-        recommendations = self.get_hybrid_recommends(k, w_content)
+        recommendations = self.content_recs, self.collab_recs, self.hybrid_recs
+
         model_types = ['content', 'collaborative', 'hybrid']
         models_dict = dict(zip(model_types, recommendations))
 
         result = defaultdict(dict)
 
-        for model_type, recommendations in models_dict.items():
+        for model_type, recommendation in models_dict.items():
 
             precisions, recalls, aps = [], [], []
 
-            for user_id, rec_list in recommendations.items():
+            for user_id, rec_list in recommendation.items():
                 if user_id not in user_real_ratings:
                     continue
 
@@ -544,45 +554,15 @@ class Hybrid:
 recommend = Hybrid(movies_list = movies_df, df_train = df_train, df_test = df_test)
 
 
-# In[18]:
+
+# recommend.get_hybrid_recommends(df_train, k = 10)
+
+# rmse = recommend.get_rmse()
+# print(f'rmse = {rmse}')
 
 
-# get_ipython().run_cell_magic('time', '', "user_ids = df_test['Cust_Id'].unique()\n\nuser_content_recs = {}\nfor i, user_id in enumerate(user_ids):\n    user_content_recs[user_id] = recommend.get_content_recommends(user_id, 10)\n    if (i + 1) % 10000 == 0:\n        print(f'Обработано {i + 1} записей из {len(user_ids)}')\n")
 
-
-# In[19]:
-
-
-# user_id = 588844
-#
-# print(f'Для пользователя {user_id} рекомендованные фильмы (content):')
-# movies_df[movies_df['Movie_Id'].isin(recommend.get_content_recommends(user_id, 5))]
-
-
-# In[20]:
-
-
-# user_collab_recs = recommend.get_collaborative_recommends(k = 10)
-
-
-# In[21]:
-
-
-# user_id = 588844
-#
-# print(f'Для пользователя {user_id} рекомендованные фильмы (collab):')
-# movies_df[movies_df['Movie_Id'].isin([movie_rating[0] for movie_rating in user_collab_recs[user_id]])]
-
-
-# In[35]:
-
-# recs = recommend.get_hybrid_recommends(k = 10)
-#
-# content_recs = recs[0]
-# colab_recs = recs[1]
-# hybrid_recs = recs[2]
-
-precisions = recommend.get_quality_metrics(w_content = 0.05)
+precisions = recommend.get_quality_metrics()
 
 # rmse = recommend.get_rmse()
 # print(f'Качество модели коллаборативной фильтрации = {rmse:.5f}')
