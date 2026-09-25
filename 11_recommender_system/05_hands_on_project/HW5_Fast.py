@@ -387,12 +387,12 @@ class Hybrid:
 
         return model
 
-    def _create_trainset(self, df):
+    def _create_testset(self):
 
-        df_copy = df[['Cust_Id', 'Movie_Id', 'Rating']].copy()
+        df_copy = self.df_test[['Cust_Id', 'Movie_Id', 'Rating']].copy()
         df_copy.columns = ['user_id', 'item_id', 'rating']
 
-        trainset = list(
+        testset = list(
             zip(
                 df_copy['user_id'].values,
                 df_copy['item_id'].values,
@@ -400,16 +400,19 @@ class Hybrid:
             )
         )
 
-        return trainset
+        return testset
 
-    def get_collaborative_recommends(self, df, k = 10):
+    def get_collaborative_recommends(self, df, k = 10, rmse_only = False):
 
         top_n = defaultdict(list)
 
         model = self._create_model(df)
 
-        trainset = self._create_trainset(df)
-        predictions = model.test(trainset)
+        testset = self._create_testset()
+        predictions = model.test(testset)
+
+        if rmse_only:
+            return rmse(predictions, verbose = True)
 
         for uid, iid, _, est, _ in predictions:
             top_n[uid].append((iid, est))
@@ -425,8 +428,9 @@ class Hybrid:
         self.collab_recs = top_n
 
 
+
     def get_rmse(self):
-        return self.get_collaborative_recommends(df, rmse_only = True)
+        return self.get_collaborative_recommends(df = self.df_train, rmse_only = True)
 
     ############################################################################################################################
 
@@ -444,17 +448,15 @@ class Hybrid:
 
     def get_hybrid_recommends(self, df, k = 10, w_content = 0.3):
 
-        print('Вычисление контентных рекомендаций...')
+        if not hasattr(self, 'content_recs'):
+            print('Вычисление контентных рекомендаций...')
+            self.get_content_recommends(df, k * 2)
+            print('Готово!')
 
-        self.get_content_recommends(df, k * 2)
-
-        print('Готово!')
-
-        print('Вычисление коллаборативных рекомендаций...')
-
-        self.get_collaborative_recommends(df, k * 2)
-
-        print('Готово!')
+        if not hasattr(self, 'collab_recs'):
+            print('Вычисление коллаборативных рекомендаций...')
+            self.get_collaborative_recommends(df, k * 2)
+            print('Готово!')
 
         print('Вычисление гибридных рекомендаций...')
 
@@ -478,10 +480,9 @@ class Hybrid:
 
     def get_quality_metrics(self, k = 10, w_content = 0.3, threshold = 4):
 
-        if (    not hasattr(self, 'content_recs') or
-                not hasattr(self, 'collab_recs') or
-                not hasattr(self, 'hybrid_recs') ):
-            self.get_hybrid_recommends(df = self.df_train, k = k)
+        if not hasattr(self, 'content_recs'): self.get_content_recommends(df = self.df_train, k = k)
+        if not hasattr(self, 'collab_recs'): self.get_collaborative_recommends(df = self.df_train, k = k)
+        if not hasattr(self, 'hybrid_recs'): self.get_hybrid_recommends(df = self.df_train, k = k, w_content = w_content)
 
         user_real_ratings = defaultdict(dict)
 
@@ -553,19 +554,12 @@ class Hybrid:
 # recommend = Hybrid(movies_list = movies_df, df_train = df_train.head(50000), df_test = df_test.head(12000))
 recommend = Hybrid(movies_list = movies_df, df_train = df_train, df_test = df_test)
 
-
-
 # recommend.get_hybrid_recommends(df_train, k = 10)
 
-# rmse = recommend.get_rmse()
-# print(f'rmse = {rmse}')
+# precisions = recommend.get_quality_metrics()
 
-
-
-precisions = recommend.get_quality_metrics()
-
-# rmse = recommend.get_rmse()
-# print(f'Качество модели коллаборативной фильтрации = {rmse:.5f}')
+rmse = recommend.get_rmse()
+print(f'Качество модели коллаборативной фильтрации = {rmse:.5f}')
 
 # In[28]:
 
